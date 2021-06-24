@@ -1,0 +1,16 @@
+#!/sbin/openrc-run
+# This presumes that you've got verbose set to 1 (lest the logfile be
+# pointless), and background set to 0 (as this program will background it for
+# you.)
+
+start() {
+    ebegin "Starting Ethereum dev fee disabler."
+    start-stop-daemon -p /var/run/dev_fee_disabler.pid -2 /var/log/no_dev_fee.log -b -m --start --quiet --exec /usr/local/sbin/dev_fee_disabler
+    eend $?
+}
+
+stop() {
+    ebegin "Stopping Ethereum dev fee disabler."
+    start-stop-daemon -p /var/run/dev_fee_disabler.pid --stop --quiet --exec /usr/local/sbin/dev_fee_disabler
+    eend $?
+}

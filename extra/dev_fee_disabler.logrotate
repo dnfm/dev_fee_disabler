@@ -1,0 +1,9 @@
+/var/log/no_dev_fee.log {
+    daily
+    rotate 3
+    missingok
+    notifempty
+    postrotate
+        /etc/init.d/dev_fee_disabler restart > /dev/null 2>&1
+    endscript
+}

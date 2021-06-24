@@ -1,0 +1,200 @@
+#!/usr/bin/perl
+
+# Most miners have hard-coded SSL hosts as the 'devfee' servers, so you may
+# want to firewall those out, forcing them to use the plaintext options so
+# this will work.
+
+# To firewall outgoing packets (ie from the computer from which the miner is
+# running), run this:
+#     iptables -A OUTPUT -p tcp --dport 5555 -j REJECT
+#     iptables -A OUTPUT -p tcp --dport 9999 -j REJECT
+#
+# To firewall them from your router through which the packets are being
+# forwarded, you want this:
+#
+#     iptables -A FORWARD -p tcp --dport 5555 -j REJECT
+#     iptables -A FORWARD -p tcp --dport 9999 -j REJECT
+#
+# Then, you'll want to tell your firewall to forward plaintext ethereum
+# packets to nfqueue so this program can parse them:
+#
+#     iptables -A OUTPUT -p tcp --dport 4444 -j NFQUEUE
+#     iptables -A OUTPUT -p tcp --dport 14444 -j NFQUEUE
+#
+# or
+#
+#     iptables -A FORWARD -p tcp --dport 4444 -j NFQUEUE
+#     iptables -A FORWARD -p tcp --dport 14444 -j NFQUEUE
+#
+# (Again, which one you choose will follow the same rules as the above REJECT
+# rules.)
+
+# Change this to your wallet address, lest you'll simply be changing the dev
+# fees from the miner's author to me, and you probably don't want to do that.
+my $wallet = '0xb82adcacac90de52e172e3c1d8626ddf05c73014';
+
+# Set this 1 to get some loggable output from your miner.
+my $verbose = 1;
+
+# Set this to the (approximate) interval you want stats output.  0 disables
+# it.
+my $stats_every = 1800;
+
+# Set this to 1 if you want it to background itself.  This is mutually
+# exclusive to verbose because you don't want a backgrounded program blabbing
+# all over your terminal.  If someone out there wants syslogging or something,
+# file an issue or implement it yourself.  Pull requests always welcome.
+my $fork = 0;
+
+if ( $fork && $verbose ) {
+    die "Specify EITHER verbose or fork, but not both.\n";
+}
+
+# If nfqueue-bindings installed its modules in the default places, it may not
+# have installed them where your perl expected them.  Change this to that
+# directory if you've installed nfqueue-bindings, but perl complains about not
+# being able to find it.
+use lib '/usr/local/lib/perl5';
+
+use strict;
+use warnings;
+
+use nfqueue;
+use NetPacket::TCP;
+use Fcntl qw( :flock );
+use Socket qw( AF_INET );
+use NetPacket::IP qw( IP_PROTO_TCP );
+
+# This is here so that you can just run the program over and over if you want;
+# it will only run one at a time -- this way you can just tell cron to run it
+# every few minutes or something, and if it crashes/quits/gets
+# killed/whatever, it'll just come back.
+exit if !flock( DATA, LOCK_EX|LOCK_NB );
+
+if ( $fork ) {
+    my $pid = fork();
+
+    if ( !defined $pid ) {
+        die "Failed forking: $!\n";
+    }
+
+    if ( $pid ) {
+        warn "Launched into background.\n";
+
+        exit;
+    }
+}
+
+sub verbose ($);
+
+verbose 'Attempting to prevent Ethereum dev-fees.';
+
+my $q = nfqueue::queue->new();
+
+sub quit {
+    verbose 'Unbinding.';
+    $q->unbind( AF_INET );
+    $q->close();
+    verbose 'Exiting.';
+}
+
+$SIG{ INT } = 'quit';
+
+my $last_comment = time;
+
+my %p = (
+    total   => 0,
+    bad     => 0,
+    login   => 0,
+    changed => 0,
+);
+
+sub callback {
+    my ( $payload ) = @_;
+
+    $p{ total }++;
+
+    my $time = time;
+
+    if ( $stats_every > 0 && $time - $last_comment > $stats_every ) {
+        verbose "Processed $p{ total } packets. "
+              . "($p{ bad } empty/invalid; "
+              . "$p{ login } login packets, "
+              . "of which $p{ changed } were modified.)";
+
+        $last_comment = $time;
+    }
+
+    my $just_quit = sub {
+        my ( $reason ) = @_;
+
+        $p{ $reason }++ if $reason;
+
+        $payload->set_verdict( $nfqueue::NF_ACCEPT ) if $payload;
+
+        return;
+    };
+
+    return $just_quit->( 'bad' ) if !$payload;
+
+    my $ip = NetPacket::IP->decode( $payload->get_data() );
+
+    return $just_quit->( 'bad' ) if $ip->{ proto } != IP_PROTO_TCP;
+
+    my $packet = NetPacket::TCP->decode( $ip->{ data } );
+
+    return $just_quit->( 'bad' ) if !$packet->{ flags } & NetPacket::TCP::PSH
+                                 || !length( $packet->{ data } );
+
+    my $wallet_login_address;
+
+    $wallet_login_address = $1 if $packet->{ data } =~ m{eth_submitLogin}
+                               && $packet->{ data } =~ m{params"\s*:\s*\[\s*"([^".]+)};
+
+    $p{ login }++ if $wallet_login_address;
+
+    return $just_quit->() if !$wallet_login_address
+                          || uc( $wallet_login_address ) eq uc( $wallet );
+
+    $p{ changed }++;
+
+    verbose "Replacing wallet address of $wallet_login_address with $wallet.";
+    verbose "<- $packet->{ data }";
+
+    $packet->{ data } =~ s/\Q$wallet_login_address\E/$wallet/ig;
+
+    verbose "-> $packet->{ data }";
+
+    $packet->{ checksum } = 0;
+        $ip->{ checksum } = 0;
+
+    $ip->{ data } = $packet->encode( $ip );
+
+    my $modified_packet = $ip->encode();
+
+    $payload->set_verdict_modified(
+        $nfqueue::NF_ACCEPT, $modified_packet, length( $modified_packet )
+    );
+}
+
+$q->set_callback( \&callback );
+$q->fast_open( 0, AF_INET );
+
+verbose "Listening.";
+$q->try_run();
+
+sub verbose ($) {
+    my ( $message ) = @_;
+
+    chomp( $message );
+
+    return if !$verbose;
+
+    my $timestamp = '[' . scalar(localtime) . ']';
+
+    warn "$timestamp $message\n";
+}
+
+__DATA__
+lock!
+
