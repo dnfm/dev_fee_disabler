@@ -31,7 +31,8 @@
 
 # Change this to your wallet address, lest you'll simply be changing the dev
 # fees from the miner's author to me, and you probably don't want to do that.
-my $wallet = '0xb82adcacac90de52e172e3c1d8626ddf05c73014';
+my $wallet      = '0xb82adcacac90de52e172e3c1d8626ddf05c73014';
+my $worker_name = 'wintendo';
 
 # Set this 1 to get some loggable output from your miner.
 my $verbose = 1;
@@ -96,9 +97,11 @@ sub quit {
     $q->unbind( AF_INET );
     $q->close();
     verbose 'Exiting.';
+    exit;
 }
 
-$SIG{ INT } = 'quit';
+$SIG{ INT  } = 'quit';
+$SIG{ TERM } = 'quit';
 
 my $last_comment = time;
 
@@ -161,7 +164,10 @@ sub callback {
     verbose "Replacing wallet address of $wallet_login_address with $wallet.";
     verbose "<- $packet->{ data }";
 
-    $packet->{ data } =~ s/\Q$wallet_login_address\E/$wallet/ig;
+    my $replace_with  = $wallet;
+       $replace_with .= ".$worker_name" if $worker_name;
+
+    $packet->{ data } =~ s/\Q$wallet_login_address\E/$replace_with/ig;
 
     verbose "-> $packet->{ data }";
 
