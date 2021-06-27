@@ -19,6 +19,28 @@ iptables -A FORWARD -p tcp --dport 5555 -j REJECT
 iptables -A FORWARD -p tcp --dport 9999 -j REJECT
 ```
 
+These are just examples; there are other miners on other ports.  From my searching, here's a complete list of SSL ports I block out:
+
+- 5555
+- 9999
+- 15555
+- 24443
+
+Here are all of the plaintext ports I forward to NFQUEUE:
+
+- 2020
+- 1800
+- 8008
+- 8011
+- 3333
+- 3401
+- 3867
+- 13333
+- 4444
+- 14444
+- 17020
+- 20535
+
 If you use something other than iptables, you'll have to set it up to either block outgoing ports 5555 and 9999 on the mining system, or forwarding ports 5555 and 9999 on the firewall.  You may want to add more parameters to make it more specific.
 
 Then, forward the non-SSL mining ports to NFQUEUE:
